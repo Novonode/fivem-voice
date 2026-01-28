@@ -59,6 +59,42 @@ error() {
     echo -e "${RED}✖ $1${RESET}"
 }
 
+# Display current server timezone
+echo -e "${BLUE}${BOLD}Current Server Timezone Information:${RESET}"
+timedatectl | grep "Time zone"
+echo ""
+
+# Prompt for FiveM server restart time(s)
+echo -e "${YELLOW}${BOLD}FiveM Server Restart Configuration${RESET}"
+echo -e "${CYAN}Please enter the time(s) your FiveM server restarts (in server's local timezone)${RESET}"
+echo -e "${CYAN}Format: HH:MM (24-hour format, e.g., 04:00 for 4 AM or 16:30 for 4:30 PM)${RESET}"
+echo -e "${CYAN}For multiple restart times, separate with commas (e.g., 04:00,12:00,20:00)${RESET}"
+read -p "Restart time(s): " RESTART_TIMES
+
+# Split restart times by comma and validate each one
+IFS=',' read -ra TIME_ARRAY <<< "$RESTART_TIMES"
+VALID_TIMES=()
+
+for TIME in "${TIME_ARRAY[@]}"; do
+    # Trim whitespace
+    TIME=$(echo "$TIME" | xargs)
+    
+    # Validate time format
+    if ! [[ $TIME =~ ^([0-1][0-9]|2[0-3]):[0-5][0-9]$ ]]; then
+        error "Invalid time format: $TIME. Please use HH:MM format (e.g., 04:00)"
+        exit 1
+    fi
+    
+    VALID_TIMES+=("$TIME")
+done
+
+if [ ${#VALID_TIMES[@]} -eq 0 ]; then
+    error "No valid restart times provided"
+    exit 1
+fi
+
+success "Restart time(s) configured: ${VALID_TIMES[*]}"
+
 # Update system packages
 step "Updating system packages"
 sudo apt update &>/dev/null && sudo apt upgrade -y &>/dev/null &
@@ -169,8 +205,51 @@ sudo ufw enable &>/dev/null &
 spinner
 success "Firewall rules applied"
 
+# Configure crontab for automatic restart
+step "Configuring automatic restart via crontab"
+
+# Remove any existing rust-mumble crontab entries
+crontab -l 2>/dev/null | grep -v "rust-mumble.service" | crontab - 2>/dev/null || true
+
+# Create crontab entries for each restart time
+CRON_ENTRIES=()
+for TIME in "${VALID_TIMES[@]}"; do
+    # Extract hour and minute
+    RESTART_HOUR=$(echo $TIME | cut -d: -f1)
+    RESTART_MINUTE=$(echo $TIME | cut -d: -f2)
+    
+    # Remove leading zeros for cron (cron doesn't like leading zeros)
+    RESTART_HOUR=$((10#$RESTART_HOUR))
+    RESTART_MINUTE=$((10#$RESTART_MINUTE))
+    
+    CRON_ENTRY="$RESTART_MINUTE $RESTART_HOUR * * * /usr/bin/systemctl restart rust-mumble.service"
+    CRON_ENTRIES+=("$CRON_ENTRY")
+done
+
+# Add all crontab entries
+(
+    crontab -l 2>/dev/null | grep -v "rust-mumble.service" || true
+    printf '%s\n' "${CRON_ENTRIES[@]}"
+) | crontab -
+
+if [ ${#VALID_TIMES[@]} -eq 1 ]; then
+    success "Crontab configured to restart rust-mumble.service daily at ${VALID_TIMES[0]}"
+else
+    success "Crontab configured to restart rust-mumble.service daily at: ${VALID_TIMES[*]}"
+fi
+
 echo -e "\n${GREEN}${BOLD}All tasks completed successfully! Rust-Mumble is now running.${RESET}"
+if [ ${#VALID_TIMES[@]} -eq 1 ]; then
+    echo -e "${CYAN}Automatic restart scheduled for: ${VALID_TIMES[0]} daily${RESET}\n"
+else
+    echo -e "${CYAN}Automatic restarts scheduled for: ${VALID_TIMES[*]} daily${RESET}\n"
+fi
 
 # Display Rust-Mumble Service Status
 step "Checking Rust-Mumble service status"
 sudo systemctl status rust-mumble --no-pager
+
+echo -e "\n${BLUE}${BOLD}Crontab Entries:${RESET}"
+for ENTRY in "${CRON_ENTRIES[@]}"; do
+    echo -e "${CYAN}$ENTRY${RESET}"
+done
